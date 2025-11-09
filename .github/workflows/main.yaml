@@ -1,53 +1,59 @@
-name: CI/CD Pipeline
+name: CI/CD Microservices
 
 on:
   push:
     branches:
-      - main
+      - "*"  # run for all branches
     tags:
-      - "*"
-  pull_request:
-    branches:
-      - main
+      - "*"  # run for all tags
 
 env:
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USER }}   # DockerHub username
-  DOCKERHUB_TOKEN: ${{ secrets.DOCKER_PASS }}     # DockerHub token
-  GROUP: la000la                                   # DockerHub user/org
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USER }}
+  DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASS }}
+  GROUP: la000la  # your DockerHub username
 
 jobs:
-  # --------------------------
-  # 1. Run automated tests
-  # --------------------------
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
 
-      - name: Set up Node.js (or your language)
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test   # replace with your test command
-
-  # --------------------------
-  # 2. Build Docker images
-  # --------------------------
-  build-and-push:
-    needs: test
+  # ----------------------------------------
+  # Step 1: Checkout and Test Microservices
+  # ----------------------------------------
+  test-microservices:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["frontend", "openapi", "healthcheck", "orders", "user", "catalogue", "payment"] # list all microservices
+        service: ["frontend", "openapi", "healthcheck"]  # list all microservices here
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        if: matrix.service == 'frontend'
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        if: matrix.service == 'frontend'
+        working-directory: ./frontend
+        run: npm install
+
+      - name: Run tests
+        if: matrix.service == 'frontend'
+        working-directory: ./frontend
+        run: npm test
+
+      # Add more test commands for other microservices if needed
+
+  # ----------------------------------------
+  # Step 2: Build & Push Docker Images
+  # ----------------------------------------
+  build-and-push:
+    needs: test-microservices
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: ["frontend", "openapi", "healthcheck"]
+    steps:
+      - uses: actions/checkout@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -56,37 +62,45 @@ jobs:
         uses: docker/login-action@v3
         with:
           username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./${{ matrix.service }}
+          context: ./{{ matrix.repo }}
           push: true
-          tags: ${{ env.GROUP }}/${{ matrix.service }}:latest
+          tags: ${{ env.GROUP }}/{{ matrix.repo }}:${{ github.sha }}
 
-  # --------------------------
-  # 3. Deploy to staging/production
-  # --------------------------
-  deploy:
+  # ----------------------------------------
+  # Step 3: Deploy to Kubernetes (KinD for staging)
+  # ----------------------------------------
+  deploy-staging:
     needs: build-and-push
     runs-on: ubuntu-latest
+    env:
+      kind-version: 'v0.10.0'
+      kind-image: 'kindest/node:v1.20.0'
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v3  # works with any K8s cluster
+      - name: Set up KinD cluster
+        uses: engineerd/setup-kind@v0.5.0
         with:
-          version: 'v1.27.0'
+          version: ${{ env.kind-version }}
+          image: ${{ env.kind-image }}
 
-      - name: Configure kubeconfig
-        run: echo "${{ secrets.KUBECONFIG_DATA }}" > kubeconfig.yaml
-        # Set your cluster credentials as a GitHub secret
-
-      - name: Deploy to cluster
+      - name: Wait cluster to be ready
         run: |
-          export KUBECONFIG=kubeconfig.yaml
-          kubectl apply -f deploy/kubernetes/   # deploy manifests
-          kubectl rollout status deployment/frontend -n your-namespace
-          # repeat or loop over other deployments if needed
+          until [ "$(kubectl get pods -A --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
+            sleep 5s
+          done
+          kubectl get pods -A
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f deploy/kubernetes/complete-demo.yaml
+          until [ "$(kubectl get pods -n sock-shop --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
+            sleep 5s
+            kubectl get pods -n sock-shop
+          done
+          kubectl get pods -A
