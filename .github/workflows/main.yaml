@@ -35,7 +35,7 @@ jobs:
         run: docker run $COMPLETE_DEMO_ARGS $COMPLETE_DEMO_IMAGE make -C $COMPLETE_DEMO_DIR check-complete-demo
 
   # ----------------------------------------
-  # 2. Test Microservices (Optional, won't block deploy)
+  # 2. Test Microservices (Optional)
   # ----------------------------------------
   test-services:
     needs: complete-demo-sync-check
@@ -43,21 +43,20 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["openapi", "healthcheck"]  # Add more microservices if they have Go code
+        service: ["openapi", "healthcheck"]  # Add other Go microservices here
     steps:
       - uses: actions/checkout@v3
 
- - name: Run tests if Go code exists
-  working-directory: ./${{ matrix.service }}
-  run: |
-    if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
-      echo "Running Go tests for ${{ matrix.service }}"
-      go test ./...
-    else
-      echo "No Go code found for ${{ matrix.service }}, skipping tests."
-    fi
-
-
+      - name: Run tests if Go code exists
+        working-directory: ./{{ matrix.service }}
+        run: |
+          #!/bin/bash
+          if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
+              echo "Running Go tests for ${{ matrix.service }}"
+              go test ./...
+          else
+              echo "No Go code found for ${{ matrix.service }}, skipping tests."
+          fi
 
   # ----------------------------------------
   # 3. Build & Push Docker Images
@@ -83,11 +82,11 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./${{ matrix.repo }}
+          context: ./{{ matrix.repo }}
           push: true
           tags: |
-            ${{ env.GROUP }}/${{ matrix.repo }}:latest
-            ${{ env.GROUP }}/${{ matrix.repo }}:${{ github.sha }}
+            ${{ env.GROUP }}/{{ matrix.repo }}:latest
+            ${{ env.GROUP }}/{{ matrix.repo }}:${{ github.sha }}
 
   # ----------------------------------------
   # 4. Deploy to EC2 using Docker Compose
