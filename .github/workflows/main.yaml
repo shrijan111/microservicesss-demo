@@ -21,10 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["frontend", "openapi", "healthcheck"]  # list all microservices here
+        service: ["frontend", "user", "payment", "openapi", "healthcheck"]
     steps:
       - uses: actions/checkout@v3
 
+      # Frontend Node.js tests
       - name: Set up Node.js
         if: matrix.service == 'frontend'
         uses: actions/setup-node@v3
@@ -36,12 +37,21 @@ jobs:
         working-directory: ./frontend
         run: npm install
 
-      - name: Run tests
+      - name: Run frontend tests
         if: matrix.service == 'frontend'
         working-directory: ./frontend
         run: npm test
 
-      # Add more test commands for other microservices if needed
+      # Backend Go services tests
+      - name: Run Go tests
+        if: matrix.service == 'user' || matrix.service == 'payment'
+        working-directory: ./services/${{ matrix.service }}
+        run: go test ./...
+
+      # Optional: add test commands for other services like healthcheck, openapi
+      - name: Test other services
+        if: matrix.service == 'healthcheck' || matrix.service == 'openapi'
+        run: echo "Add custom tests here for ${{ matrix.service }}"
 
   # ----------------------------------------
   # Step 2: Build & Push Docker Images
@@ -51,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: ["frontend", "openapi", "healthcheck"]
+        repo: ["frontend", "user", "payment", "openapi", "healthcheck"]
     steps:
       - uses: actions/checkout@v3
 
@@ -67,40 +77,27 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./{{ matrix.repo }}
+          context: ./services/${{ matrix.repo }}
           push: true
-          tags: ${{ env.GROUP }}/{{ matrix.repo }}:${{ github.sha }}
+          tags: |
+            ${{ env.GROUP }}/{{ matrix.repo }}:latest
+            ${{ env.GROUP }}/{{ matrix.repo }}:${{ github.sha }}
 
   # ----------------------------------------
-  # Step 3: Deploy to Kubernetes (KinD for staging)
+  # Step 3: Deploy to EC2 with Docker Compose
   # ----------------------------------------
   deploy-staging:
     needs: build-and-push
     runs-on: ubuntu-latest
-    env:
-      kind-version: 'v0.10.0'
-      kind-image: 'kindest/node:v1.20.0'
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up KinD cluster
-        uses: engineerd/setup-kind@v0.5.0
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v0.1.7
         with:
-          version: ${{ env.kind-version }}
-          image: ${{ env.kind-image }}
-
-      - name: Wait cluster to be ready
-        run: |
-          until [ "$(kubectl get pods -A --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-            sleep 5s
-          done
-          kubectl get pods -A
-
-      - name: Apply Kubernetes manifests
-        run: |
-          kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          until [ "$(kubectl get pods -n sock-shop --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-            sleep 5s
-            kubectl get pods -n sock-shop
-          done
-          kubectl get pods -A
+          host: ${{ secrets.DEPLOY_SERVER }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd ~/microservices-demo
+            docker-compose pull
+            docker-compose up -d
+            docker ps
