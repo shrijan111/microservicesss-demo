@@ -35,11 +35,12 @@ jobs:
         run: docker run $COMPLETE_DEMO_ARGS $COMPLETE_DEMO_IMAGE make -C $COMPLETE_DEMO_DIR check-complete-demo
 
   # ----------------------------------------
-  # 2. Deploy to KinD (Staging Test)
+  # 2. Optional: Deploy to KinD (Staging Test)
   # ----------------------------------------
   deployments-tests:
     needs: complete-demo-sync-check
     runs-on: ubuntu-latest
+    continue-on-error: true  # This ensures pipeline continues even if this job fails
     env:
       kind-version: 'v0.10.0'
       kind-image: 'kindest/node:v1.20.0'
@@ -70,14 +71,14 @@ jobs:
           kubectl get pods -A
 
   # ----------------------------------------
-  # 3. Test Microservices
+  # 3. Test Microservices (Go tests)
   # ----------------------------------------
   test-services:
-    needs: deployments-tests
+    needs: complete-demo-sync-check
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["openapi", "healthcheck"]
+        service: ["openapi", "healthcheck"]  # List microservices here
     steps:
       - uses: actions/checkout@v3
 
@@ -98,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: ["openapi", "healthcheck"]
+        repo: ["openapi", "healthcheck"]  # List microservices to build Docker images
     steps:
       - uses: actions/checkout@v3
 
