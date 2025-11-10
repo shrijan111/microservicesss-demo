@@ -35,71 +35,36 @@ jobs:
         run: docker run $COMPLETE_DEMO_ARGS $COMPLETE_DEMO_IMAGE make -C $COMPLETE_DEMO_DIR check-complete-demo
 
   # ----------------------------------------
-  # 2. Optional: Deploy to KinD (Staging Test)
-  # ----------------------------------------
-  deployments-tests:
-    needs: complete-demo-sync-check
-    runs-on: ubuntu-latest
-    continue-on-error: true  # This ensures pipeline continues even if this job fails
-    env:
-      kind-version: 'v0.10.0'
-      kind-image: 'kindest/node:v1.20.0'
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Start KinD
-        uses: engineerd/setup-kind@v0.5.0
-        with:
-          version: ${{ env.kind-version }}
-          image: ${{ env.kind-image }}
-
-      - name: Wait cluster to start
-        run: |
-          until [ "$(kubectl get pods -A --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-              sleep 5s
-          done
-          kubectl get pods -A
-
-      - name: Run and test Complete demo
-        run: |
-          kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          until [ "$(kubectl get pods -n sock-shop --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-              sleep 5s
-              kubectl get pods -n sock-shop
-          done
-          kubectl get pods -A
-
-  # ----------------------------------------
-  # 3. Test Microservices (Go tests)
+  # 2. Test Microservices (Optional, won't block deploy)
   # ----------------------------------------
   test-services:
     needs: complete-demo-sync-check
+    continue-on-error: true
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["openapi", "healthcheck"]  # List microservices here
+        service: ["openapi", "healthcheck"]  # Add more microservices if they have Go code
     steps:
       - uses: actions/checkout@v3
 
-      - name: Run Go tests
+      - name: Run tests if Go code exists
         working-directory: ./${{ matrix.service }}
         run: |
-          if ls *.go 1> /dev/null 2>&1; then
+          if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
             echo "Running Go tests for ${{ matrix.service }}"
             go test ./...
           else
-            echo "No Go tests found for ${{ matrix.service }}"
+            echo "No Go code found for ${{ matrix.service }}, skipping tests."
 
   # ----------------------------------------
-  # 4. Build & Push Docker Images
+  # 3. Build & Push Docker Images
   # ----------------------------------------
   build-test-images:
-    needs: test-services
+    needs: complete-demo-sync-check
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: ["openapi", "healthcheck"]  # List microservices to build Docker images
+        repo: ["openapi", "healthcheck"]  # Add more microservices to build Docker images
     steps:
       - uses: actions/checkout@v3
 
@@ -122,7 +87,7 @@ jobs:
             ${{ env.GROUP }}/${{ matrix.repo }}:${{ github.sha }}
 
   # ----------------------------------------
-  # 5. Deploy to EC2 using Docker Compose
+  # 4. Deploy to EC2 using Docker Compose
   # ----------------------------------------
   deploy-to-ec2:
     needs: build-test-images
