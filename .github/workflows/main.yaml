@@ -1,16 +1,22 @@
-name: ci
+name: CI/CD Microservices
 
 on:
   push:
     branches:
-    - "*"  # run for branches
+      - "*"  # run on all branches
     tags:
-    - "*"  # run for tags
+      - "*"  # run on all tags
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USER }}
+  DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASS }}
+  GROUP: weaveworksdemos  # your DockerHub username
 
 jobs:
-  #
-  #
-  #check complete demo is in sync with individual manifest, it should block fom merge. Should this be a diferent file?
+
+  # ----------------------------------------
+  # 1. Complete Demo Manifest Check
+  # ----------------------------------------
   complete-demo-sync-check:
     runs-on: ubuntu-latest
     env:
@@ -18,27 +24,19 @@ jobs:
       COMPLETE_DEMO_DIR: 'deploy/kubernetes/'
       COMPLETE_DEMO_IMAGE: 'manifests-image'
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-    #
-    #
-    # Build image
-    - name: Build image
-      env:
-        DOCKER_BUILDKIT: 1
-      run: docker build -t $COMPLETE_DEMO_IMAGE $COMPLETE_DEMO_DIR
+      - name: Build image
+        env:
+          DOCKER_BUILDKIT: 1
+        run: docker build -t $COMPLETE_DEMO_IMAGE $COMPLETE_DEMO_DIR
 
-    #
-    #
-    # Check that manifest and complete-demo.yaml ahve the same content
-    - name: check comeplte-demo.yaml content sync
-      run: docker run $COMPLETE_DEMO_ARGS $COMPLETE_DEMO_IMAGE make -C $COMPLETE_DEMO_DIR check-complete-demo
+      - name: Check complete-demo.yaml content sync
+        run: docker run $COMPLETE_DEMO_ARGS $COMPLETE_DEMO_IMAGE make -C $COMPLETE_DEMO_DIR check-complete-demo
 
-  #
-  #
-  #check that we can deploy complete-demo
-  #NOTE: what about docker compose? maybe doesn't make sense if we use the KIND action
-  #NOTE: later we can test that the documentation is tested, as in previous cronjobs in travis
+  # ----------------------------------------
+  # 2. Deploy to KinD (Staging Test)
+  # ----------------------------------------
   deployments-tests:
     needs: complete-demo-sync-check
     runs-on: ubuntu-latest
@@ -47,57 +45,96 @@ jobs:
       kind-image: 'kindest/node:v1.20.0'
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v2
-    - name: Start KinD
-      uses: engineerd/setup-kind@v0.5.0
-      with:
-        version: ${{ env.kind-version }}
-        image: ${{ env.kind-image }}
-    - name: Wait cluster to start
-      run: |
-        until [ "$(kubectl get pods -A --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-            sleep 5s
-        done
-        kubectl get pod -A
-    - name: Run and test Complete demo
-      run: |
-        kubectl apply -f deploy/kubernetes/complete-demo.yaml
-        until [ "$(kubectl get pods -n sock-shop --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
-            sleep 5s
-            kubectl get pods -n sock-shop
-            kubectl describe node | grep "Allocated resources" -A 10
-        done
-        kubectl get pod -A
+      - uses: actions/checkout@v3
 
-  #
-  #
-  #build openapi and healtcheck images
-  build-test-images:
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master'
+      - name: Start KinD
+        uses: engineerd/setup-kind@v0.5.0
+        with:
+          version: ${{ env.kind-version }}
+          image: ${{ env.kind-image }}
+
+      - name: Wait cluster to start
+        run: |
+          until [ "$(kubectl get pods -A --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
+              sleep 5s
+          done
+          kubectl get pods -A
+
+      - name: Run and test Complete demo
+        run: |
+          kubectl apply -f deploy/kubernetes/complete-demo.yaml
+          until [ "$(kubectl get pods -n sock-shop --no-headers | grep -cEv '([0-9]+)/\1')" -eq 0 ]; do
+              sleep 5s
+              kubectl get pods -n sock-shop
+          done
+          kubectl get pods -A
+
+  # ----------------------------------------
+  # 3. Test Microservices
+  # ----------------------------------------
+  test-services:
+    needs: deployments-tests
     runs-on: ubuntu-latest
-    env:
-      GROUP: weaveworksdemos 
+    strategy:
+      matrix:
+        service: ["openapi", "healthcheck"]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Go tests
+        working-directory: ./${{ matrix.service }}
+        run: |
+          if ls *.go 1> /dev/null 2>&1; then
+            echo "Running Go tests for ${{ matrix.service }}"
+            go test ./...
+          else
+            echo "No Go tests found for ${{ matrix.service }}"
+
+  # ----------------------------------------
+  # 4. Build & Push Docker Images
+  # ----------------------------------------
+  build-test-images:
+    needs: test-services
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         repo: ["openapi", "healthcheck"]
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-    #
-    #
-    # Push to dockerhub
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
-    
-    - name: Login to DockerHub
-      uses: docker/login-action@v1
-      with:
-        username: ${{ secrets.DOCKER_USER }}
-        password: ${{ secrets.DOCKER_PASS }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Build and push
-      uses: docker/build-push-action@v2
-      with:
-        context: ${{ matrix.repo }}
-        push: true
-        tags: ${{ env.GROUP }}/${{ matrix.repo }}:${{ github.sha }}
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./${{ matrix.repo }}
+          push: true
+          tags: |
+            ${{ env.GROUP }}/${{ matrix.repo }}:latest
+            ${{ env.GROUP }}/${{ matrix.repo }}:${{ github.sha }}
+
+  # ----------------------------------------
+  # 5. Deploy to EC2 using Docker Compose
+  # ----------------------------------------
+  deploy-to-ec2:
+    needs: build-test-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_SERVER }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd ~/microservices-demo
+            docker-compose pull
+            docker-compose up -d
+            docker ps
