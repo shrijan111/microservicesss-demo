@@ -47,14 +47,17 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Run tests if Go code exists
-        working-directory: ./${{ matrix.service }}
-        run: |
-          if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
-            echo "Running Go tests for ${{ matrix.service }}"
-            go test ./...
-          else
-            echo "No Go code found for ${{ matrix.service }}, skipping tests."
+ - name: Run tests if Go code exists
+  working-directory: ./${{ matrix.service }}
+  run: |
+    if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
+      echo "Running Go tests for ${{ matrix.service }}"
+      go test ./...
+    else
+      echo "No Go code found for ${{ matrix.service }}, skipping tests."
+    fi
+
+
 
   # ----------------------------------------
   # 3. Build & Push Docker Images
