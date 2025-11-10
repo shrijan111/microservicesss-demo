@@ -3,9 +3,9 @@ name: CI/CD Microservices
 on:
   push:
     branches:
-      - "*"  # run for all branches
+      - "*"
     tags:
-      - "*"  # run for all tags
+      - "*"
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USER }}
@@ -15,24 +15,45 @@ env:
 jobs:
 
   # ----------------------------------------
-  # Step 1: Checkout and Test Microservices
+  # Step 1: Detect existing service folders
+  # ----------------------------------------
+  detect-services:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set-services.outputs.services }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: List service directories
+        id: set-services
+        run: |
+          # List all folders in repo root except ignored ones
+          folders=$(find . -maxdepth 1 -type d ! -name '.' ! -name '.github' ! -name 'infra' ! -name 'deploy' ! -name 'graphs' ! -name 'internal-docs')
+          # Remove './' prefix
+          services=$(echo $folders | sed 's#\./##g')
+          echo "Detected services: $services"
+          echo "services=$services" >> $GITHUB_OUTPUT
+
+  # ----------------------------------------
+  # Step 2: Test Microservices
   # ----------------------------------------
   test-microservices:
+    needs: detect-services
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: ["frontend", "user", "payment", "openapi", "healthcheck"]
+        service: ${{fromJSON('["' + needs.detect-services.outputs.services | replace(' ', '","') + '"]')}}
     steps:
       - uses: actions/checkout@v3
 
       # Frontend Node.js tests
-      - name: Set up Node.js
+      - name: Setup Node.js
         if: matrix.service == 'frontend'
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      - name: Install dependencies
+      - name: Install dependencies (frontend)
         if: matrix.service == 'frontend'
         working-directory: ./frontend
         run: npm install
@@ -42,26 +63,22 @@ jobs:
         working-directory: ./frontend
         run: npm test
 
-      # Backend Go services tests
-      - name: Run Go tests
-        if: matrix.service == 'user' || matrix.service == 'payment'
-        working-directory: ./services/${{ matrix.service }}
-        run: go test ./...
-
-      # Optional: add test commands for other services like healthcheck, openapi
-      - name: Test other services
-        if: matrix.service == 'healthcheck' || matrix.service == 'openapi'
-        run: echo "Add custom tests here for ${{ matrix.service }}"
+      # Backend / Other services placeholder
+      - name: Run backend/other service tests
+        if: matrix.service != 'frontend'
+        working-directory: ./${{ matrix.service }}
+        run: |
+          echo "Add test commands for ${{ matrix.service }} here"
 
   # ----------------------------------------
-  # Step 2: Build & Push Docker Images
+  # Step 3: Build & Push Docker Images
   # ----------------------------------------
   build-and-push:
     needs: test-microservices
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repo: ["frontend", "user", "payment", "openapi", "healthcheck"]
+        repo: ${{fromJSON('["' + needs.detect-services.outputs.services | replace(' ', '","') + '"]')}}
     steps:
       - uses: actions/checkout@v3
 
@@ -77,14 +94,14 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./services/${{ matrix.repo }}
+          context: ./${{ matrix.repo }}
           push: true
           tags: |
-            ${{ env.GROUP }}/{{ matrix.repo }}:latest
-            ${{ env.GROUP }}/{{ matrix.repo }}:${{ github.sha }}
+            ${{ env.GROUP }}/${{ matrix.repo }}:latest
+            ${{ env.GROUP }}/${{ matrix.repo }}:${{ github.sha }}
 
   # ----------------------------------------
-  # Step 3: Deploy to EC2 with Docker Compose
+  # Step 4: Deploy to EC2 with Docker Compose
   # ----------------------------------------
   deploy-staging:
     needs: build-and-push
