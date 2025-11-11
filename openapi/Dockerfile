@@ -1,4 +1,4 @@
-FROM node/alpine-node:6.17
+FROM node:16-alpine
 
 ENV NODE_ENV "development"
 ENV NODE_PATH "/usr/src/app/node_modules"
