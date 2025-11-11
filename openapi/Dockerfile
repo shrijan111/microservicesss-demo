@@ -5,7 +5,7 @@ ENV NODE_PATH "/usr/src/app/node_modules"
 
 # Install base dependencies
 RUN apk update
-RUN apk add git python
+RUN apk add git python3
 
 # Prepare app directory
 WORKDIR /usr/src/app
